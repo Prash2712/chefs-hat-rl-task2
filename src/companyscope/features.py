@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -23,7 +23,7 @@ def build_company_features(
     as_of: date | None = None,
 ) -> dict[str, object]:
     """Create auditable features from Companies House public-record responses."""
-    as_of = as_of or datetime.now(timezone.utc).date()
+    as_of = as_of or datetime.now(UTC).date()
     creation_date = _parse_date(profile.get("date_of_creation"))
     company_age_days = _days_between(creation_date, as_of)
 
