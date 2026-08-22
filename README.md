@@ -1,119 +1,195 @@
-# Deep Q-Learning for Sparse-Reward Multi-Agent Play
+# CompanyScope UK — Corporate Intelligence from Companies House
 
-Reinforcement-learning implementation for the **Chef's Hat Gym** environment, focused on learning under sparse and delayed rewards.
+A production-style data product that turns **Companies House public records** into an explainable company due-diligence view: statutory filing signals, company age, filing recency, active-officer counts and a transparent **review-attention assessment**.
 
-This project explores value-based deep RL using **Dueling DQN**, **Double DQN**, experience replay and configurable reward shaping in a competitive card-game setting.
+The project is intentionally built as a real service rather than a notebook. It has an authenticated source client, feature layer, explainable rules, FastAPI interface, CLI, tests, Docker and CI.
 
-## Technical focus
+## The problem
 
-- Deep Q-Networks (DQN)
-- Dueling value/advantage architecture
-- Double DQN target estimation
-- Experience replay
-- Epsilon-greedy exploration
-- Sparse and delayed rewards
-- Reward shaping and auxiliary signals
-- Multi-agent environment interaction
-- Training/evaluation utilities
+Company information is public, but useful investigation often requires joining several resources and converting raw records into consistent signals. CompanyScope answers questions such as:
 
-## Why this problem is interesting
+- Is the company active?
+- Are accounts or confirmation statements marked overdue?
+- When was the latest filing?
+- How active has filing been in the past year?
+- How many officers are currently active?
+- Which observable public-record conditions deserve human review?
 
-Sparse terminal rewards make credit assignment difficult because the agent receives little information about which earlier actions contributed to the final outcome. Multi-agent interaction adds further non-stationarity because the effective environment changes with opponent behaviour.
+The system **does not claim to predict insolvency or creditworthiness**. It produces a traceable screening indicator for prioritising further investigation.
 
-The repository experiments with denser learning signals while retaining a value-based RL architecture.
+## Official data source
+
+CompanyScope uses the **Companies House Public Data API**:
+
+- Company profile: `/company/{company_number}`
+- Filing history: `/company/{company_number}/filing-history`
+- Officers: `/company/{company_number}/officers`
+
+Documentation:
+
+https://developer-specs.company-information.service.gov.uk/companies-house-public-data-api/reference
+
+A Companies House API key is required. It is provided through the environment and never committed to source control.
+
+## Architecture
+
+```text
+Companies House Public Data API
+             |
+             v
+Authenticated API client
+             |
+       +-----+---------+
+       |       |       |
+       v       v       v
+    profile  filings  officers
+       \       |       /
+        \      |      /
+         v     v     v
+       feature layer
+             |
+             v
+transparent attention rules
+             |
+        +----+----+
+        |         |
+        v         v
+      FastAPI     CLI
+```
+
+## Derived analytical features
+
+The current feature layer exposes:
+
+- company status and type
+- date of creation / company age
+- accounts-overdue flag
+- confirmation-statement-overdue flag
+- latest filing date
+- days since latest filing
+- filings in the past 12 months
+- active officer count
+- SIC codes
+- presence of a Companies House insolvency-history resource
+
+These are deterministic transformations of source fields, not inferred private attributes.
+
+## Explainable attention assessment
+
+The assessment is a small, auditable rule set. Every point is returned with a human-readable reason.
+
+Examples of configured attention signals:
+
+- company status other than active
+- overdue accounts
+- overdue confirmation statement
+- unusually stale filing history
+- an insolvency-history resource being exposed by Companies House
+
+Bands are labelled `routine`, `review` and `high-attention`.
+
+**Important:** this is not a credit rating, fraud score, probability of insolvency, investment recommendation or automated decision system. See [`docs/methodology.md`](docs/methodology.md).
 
 ## Repository structure
 
 ```text
 .
-├── dqn_agent.py
-├── chefs_hat_env.py
-├── train_agent.py
-├── evaluate_agent.py
-├── requirements.txt
-├── Technical Documentation - Chef's Hat RL Agent.md
-├── .gitignore
-├── LICENSE
-└── README.md
+├── src/companyscope/
+│   ├── client.py
+│   ├── features.py
+│   ├── assessment.py
+│   ├── service.py
+│   ├── api.py
+│   └── cli.py
+├── tests/
+├── docs/
+│   └── methodology.md
+├── .github/workflows/ci.yml
+├── .env.example
+├── Dockerfile
+├── pyproject.toml
+└── requirements.txt
 ```
 
-## Architecture
-
-### Dueling DQN
-
-The network decomposes the action-value function into a state-value stream and an advantage stream:
-
-```text
-Q(s, a) = V(s) + A(s, a) - mean(A(s, ·))
-```
-
-This can improve value estimation when many actions have similar effects in a state.
-
-### Double DQN
-
-Action selection and target evaluation are separated to reduce the overestimation bias associated with standard Q-learning targets.
-
-### Experience replay
-
-Past transitions are stored in a replay buffer and sampled during optimisation, reducing temporal correlation and improving data reuse.
-
-## Reward configurations
-
-The environment wrapper supports different reward strategies, including:
-
-- sparse terminal rewards
-- intermediate action-based shaping
-- auxiliary reward signals
-
-This enables controlled comparisons between learning from outcome-only feedback and learning from denser signals.
-
-## Running the project
-
-Install the dependencies and required Chef's Hat Gym environment, then run:
+## Run locally
 
 ```bash
-python train_agent.py
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]'
+
+export COMPANIES_HOUSE_API_KEY='your_key_here'
+companyscope inspect 00000006
 ```
 
-Evaluation utilities are available through:
+The CLI prints the company identity, derived features, attention band, score, exact contributing reasons and source label.
+
+## API
 
 ```bash
-python evaluate_agent.py
+uvicorn companyscope.api:app --reload
 ```
 
-Generated experiment files are written by the training pipeline when it is executed.
+Endpoints:
 
-## Results policy
+- `GET /health`
+- `GET /company/{company_number}`
 
-The previous README included a numerical results table even though the corresponding experiment artifacts are not currently committed in this repository. Those figures have therefore been removed from the portfolio-facing documentation.
+The company endpoint fetches the live public record and returns the consolidated intelligence report.
 
-Any performance claims should be based on freshly generated or committed evaluation outputs rather than unsupported summary numbers.
+## Container
 
-## Current limitations
+```bash
+docker build -t companyscope-uk .
+docker run \
+  -e COMPANIES_HOUSE_API_KEY="$COMPANIES_HOUSE_API_KEY" \
+  -p 8000:8000 \
+  companyscope-uk
+```
 
-- Sparse reward remains a difficult learning signal
-- Opponent behaviour introduces non-stationarity
-- The action space varies with game state
-- Hidden information makes the environment partially observable
-- Long episodes make temporal credit assignment challenging
+## Quality controls
 
-## Technical stack
+Tests use synthetic Companies House-shaped payloads and do not depend on live API responses.
 
-`Python` · `PyTorch` · `DQN` · `Double DQN` · `Dueling Networks` · `NumPy` · `pandas` · `Matplotlib`
+```bash
+ruff check src tests
+pytest -q
+```
 
-## Academic provenance
+GitHub Actions runs both checks on pushes and pull requests.
 
-Originally developed for Coventry University reinforcement-learning coursework using the sparse/delayed reward variant. Academic metadata is retained here for provenance, while the repository is presented primarily around the engineering and RL methods demonstrated.
+## Why this is a portfolio data product
 
-## References
+**Data / Analytics**
+- multi-resource public-record integration
+- explicit feature definitions
+- reproducible business rules
+- data freshness measures
 
-- Mnih et al. (2015), *Human-level control through deep reinforcement learning*
-- Wang et al. (2016), *Dueling Network Architectures for Deep Reinforcement Learning*
-- van Hasselt et al. (2016), *Deep Reinforcement Learning with Double Q-learning*
+**Software / ML Engineering**
+- authenticated external API client
+- environment-based secret handling
+- package architecture
+- service composition
+- FastAPI
+- Docker
+- CI and unit testing
+
+**Model governance**
+- no unsupported predictive claims
+- transparent score components
+- explicit intended-use boundary
+- pathway documented for future point-in-time supervised modelling
+
+## Suggested repository name
+
+Rename this current legacy shell to:
+
+`uk-company-intelligence-platform`
+
+The original reinforcement-learning coursework is preserved on `archive/original-coursework`.
 
 ## Author
 
 **Prasanth Balisetty**  
-Data Science & Machine Learning
-
-[GitHub](https://github.com/Prash2712)
+Data Science · Analytics · Machine Learning Engineering
