@@ -1,117 +1,65 @@
-# CompanyScope UK — Corporate Intelligence from Companies House
+# CompanyScope UK
 
-A production-style data product that turns **Companies House public records** into an explainable company due-diligence view: statutory filing signals, company age, filing recency, active-officer counts and a transparent **review-attention assessment**.
+Companies House already exposes a lot of useful information. The awkward part is that a quick company check usually means opening several resources and mentally joining them: status, accounts, confirmation statements, filings, officers and, sometimes, insolvency history.
 
-The project is intentionally built as a real service rather than a notebook. It has an authenticated source client, feature layer, explainable rules, FastAPI interface, CLI, tests, Docker and CI.
+This project turns those public records into one inspectable report.
 
-## The problem
+I deliberately did **not** build an “AI credit score”. There is no labelled credit-performance dataset here, and a made-up probability would look more impressive than it is useful. The current assessment is a transparent review-attention rule set: every flag comes directly from a public field and every point has a reason.
 
-Company information is public, but useful investigation often requires joining several resources and converting raw records into consistent signals. CompanyScope answers questions such as:
+## Source
 
-- Is the company active?
-- Are accounts or confirmation statements marked overdue?
-- When was the latest filing?
-- How active has filing been in the past year?
-- How many officers are currently active?
-- Which observable public-record conditions deserve human review?
-
-The system **does not claim to predict insolvency or creditworthiness**. It produces a traceable screening indicator for prioritising further investigation.
-
-## Official data source
-
-CompanyScope uses the **Companies House Public Data API**:
-
-- Company profile: `/company/{company_number}`
-- Filing history: `/company/{company_number}/filing-history`
-- Officers: `/company/{company_number}/officers`
-
-Documentation:
-
-https://developer-specs.company-information.service.gov.uk/companies-house-public-data-api/reference
-
-A Companies House API key is required. It is provided through the environment and never committed to source control.
-
-## Architecture
+The client uses the Companies House Public Data API:
 
 ```text
-Companies House Public Data API
-             |
-             v
-Authenticated API client
-             |
-       +-----+---------+
-       |       |       |
-       v       v       v
-    profile  filings  officers
-       \       |       /
-        \      |      /
-         v     v     v
-       feature layer
-             |
-             v
-transparent attention rules
-             |
-        +----+----+
-        |         |
-        v         v
-      FastAPI     CLI
+/company/{company_number}
+/company/{company_number}/filing-history
+/company/{company_number}/officers
 ```
 
-## Derived analytical features
+API docs: https://developer-specs.company-information.service.gov.uk/companies-house-public-data-api/reference
 
-The current feature layer exposes:
+Set the key through the environment:
+
+```bash
+export COMPANIES_HOUSE_API_KEY='...'
+```
+
+Nothing secret is stored in source control.
+
+## What the report contains
+
+The feature layer currently derives:
 
 - company status and type
-- date of creation / company age
+- incorporation date / company age
 - accounts-overdue flag
 - confirmation-statement-overdue flag
-- latest filing date
-- days since latest filing
-- filings in the past 12 months
+- most recent filing date
+- days since the latest filing
+- filing count over the previous 12 months
 - active officer count
 - SIC codes
-- presence of a Companies House insolvency-history resource
+- whether Companies House exposes an insolvency-history resource
 
-These are deterministic transformations of source fields, not inferred private attributes.
+These are deterministic transformations. I want it to be possible to trace a value in the API response back to the source record without reverse-engineering a model.
 
-## Explainable attention assessment
+## Review-attention rules
 
-The assessment is a small, auditable rule set. Every point is returned with a human-readable reason.
+A few conditions add review points: non-active status, overdue statutory filings, very stale filing activity and an insolvency-history resource. The API returns the score, band and the exact reasons.
 
-Examples of configured attention signals:
-
-- company status other than active
-- overdue accounts
-- overdue confirmation statement
-- unusually stale filing history
-- an insolvency-history resource being exposed by Companies House
-
-Bands are labelled `routine`, `review` and `high-attention`.
-
-**Important:** this is not a credit rating, fraud score, probability of insolvency, investment recommendation or automated decision system. See [`docs/methodology.md`](docs/methodology.md).
-
-## Repository structure
+The bands are only:
 
 ```text
-.
-├── src/companyscope/
-│   ├── client.py
-│   ├── features.py
-│   ├── assessment.py
-│   ├── service.py
-│   ├── api.py
-│   └── cli.py
-├── tests/
-├── docs/
-│   └── methodology.md
-├── .github/workflows/ci.yml
-├── .env.example
-├── Dockerfile
-├── pyproject.toml
-└── requirements.txt
+routine
+review
+high-attention
 ```
 
-## Run locally
+They are not a statement that a company is safe, unsafe, fraudulent, insolvent or creditworthy. Someone using the output still has to inspect the underlying records and context.
+
+The rationale and current weights are documented in `docs/methodology.md`.
+
+## Run it
 
 ```bash
 python -m venv .venv
@@ -122,9 +70,9 @@ export COMPANIES_HOUSE_API_KEY='your_key_here'
 companyscope inspect 00000006
 ```
 
-The CLI prints the company identity, derived features, attention band, score, exact contributing reasons and source label.
+The CLI is useful when I want the raw consolidated report without running a service.
 
-## API
+For the API:
 
 ```bash
 uvicorn companyscope.api:app --reload
@@ -135,61 +83,34 @@ Endpoints:
 - `GET /health`
 - `GET /company/{company_number}`
 
-The company endpoint fetches the live public record and returns the consolidated intelligence report.
+A Dockerfile is included for the same API path.
 
-## Container
+## Code map
 
-```bash
-docker build -t companyscope-uk .
-docker run \
-  -e COMPANIES_HOUSE_API_KEY="$COMPANIES_HOUSE_API_KEY" \
-  -p 8000:8000 \
-  companyscope-uk
+```text
+src/companyscope/client.py       Companies House requests
+src/companyscope/features.py     deterministic feature building
+src/companyscope/assessment.py   review-attention rules
+src/companyscope/service.py      orchestration
+src/companyscope/api.py          HTTP interface
+src/companyscope/cli.py          command-line interface
+tests/                           synthetic API-shaped fixtures
+docs/methodology.md              assumptions and boundaries
 ```
 
-## Quality controls
-
-Tests use synthetic Companies House-shaped payloads and do not depend on live API responses.
+Tests do not call the live Companies House service. They use small shaped payloads so a temporary API problem cannot make CI red.
 
 ```bash
 ruff check src tests
 pytest -q
 ```
 
-GitHub Actions runs both checks on pushes and pull requests.
+## If I turn this into a predictive project
 
-## Why this is a portfolio data product
+I would first build a **point-in-time** dataset. Using today's company status to predict an event that happened in the past would leak the answer immediately. The label also needs a precise definition and observation window. Until that data work exists, keeping the rules transparent is the more defensible design.
 
-**Data / Analytics**
-- multi-resource public-record integration
-- explicit feature definitions
-- reproducible business rules
-- data freshness measures
+## One limitation worth calling out
 
-**Software / ML Engineering**
-- authenticated external API client
-- environment-based secret handling
-- package architecture
-- service composition
-- FastAPI
-- Docker
-- CI and unit testing
+A company can file on time and still be a poor counterparty; it can also have unusual filing activity for completely legitimate reasons. Public-record screening narrows what to inspect. It does not replace financial analysis or due diligence.
 
-**Model governance**
-- no unsupported predictive claims
-- transparent score components
-- explicit intended-use boundary
-- pathway documented for future point-in-time supervised modelling
-
-## Suggested repository name
-
-Rename this current legacy shell to:
-
-`uk-company-intelligence-platform`
-
-The original reinforcement-learning coursework is preserved on `archive/original-coursework`.
-
-## Author
-
-**Prasanth Balisetty**  
-Data Science · Analytics · Machine Learning Engineering
+**Prasanth Balisetty**
